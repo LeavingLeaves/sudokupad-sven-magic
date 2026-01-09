@@ -130,6 +130,9 @@ window.addEventListener('DOMContentLoaded', () => {
             }
         });
 
+        window.addEventListener("keypress", (event) => {
+            if (event.key === 'q' || event.key === 'Q' || event.key === '`') { doMagic(); }
+        });
 
         const createButton = (title, onClick, options = {}) => {
             const sven2 = document.createElement('div');
