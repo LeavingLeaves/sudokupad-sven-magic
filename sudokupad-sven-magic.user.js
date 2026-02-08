@@ -3,7 +3,7 @@
 // @namespace    http://tampermonkey.net/
 // @version      0.10
 // @description  Add a button that resolves all singles in SudokuPad
-// @author       Chameleon
+// @author       Chameleon (modified by Leaving Leaves)
 // @updateURL    https://github.com/yusitnikov/sudokupad-sven-magic/raw/main/sudokupad-sven-magic.user.js
 // @match        https://crackingthecryptic.com/*
 // @match        https://*.crackingthecryptic.com/*
@@ -20,19 +20,18 @@ window.addEventListener('DOMContentLoaded', () => {
         if (initialized) {
             return;
         }
-        initialized = true;
 
         const animationSpeed = 500;
-        const {app} = Framework;
+        const { app } = Framework;
         const sven = document.getElementById('svenpeek');
         const styles = getComputedStyle(sven);
 
 
-        const deselect = () => app.act({type: 'deselect'});
+        const deselect = () => app.act({ type: 'deselect' });
         const select = (cells) => {
             deselect();
             if (cells.length) {
-                app.act({type: 'select', arg: cells});
+                app.act({ type: 'select', arg: cells });
             }
         };
 
@@ -44,14 +43,14 @@ window.addEventListener('DOMContentLoaded', () => {
 
             isInTransaction = true;
             const prevSelectedCells = [...app.puzzle.selectedCells];
-            app.act({type: 'groupstart'});
+            app.act({ type: 'groupstart' });
 
             try {
                 return callback();
             } finally {
                 isInTransaction = false;
                 select(prevSelectedCells);
-                app.act({type: 'groupend'});
+                app.act({ type: 'groupend' });
             }
         };
 
@@ -67,10 +66,10 @@ window.addEventListener('DOMContentLoaded', () => {
         const cleanUp = (applyToCells = app.grid.getCellList()) => transaction(() => {
             const conflicts = app.puzzle.check(['pencilmarks']);
 
-            for (const {prop, cells, val} of conflicts) {
+            for (const { prop, cells, val } of conflicts) {
                 const type = prop === 'centre' ? 'candidates' : 'pencilmarks';
                 select(cells.filter(cell => applyToCells.includes(cell) && cell[type].includes(val)));
-                app.act({type, arg: val});
+                app.act({ type, arg: val });
             }
 
             return conflicts.length > 0;
@@ -82,7 +81,7 @@ window.addEventListener('DOMContentLoaded', () => {
             for (const cell of app.grid.getCellList()) {
                 if (!getCellValue(cell) && cell.candidates && cell.candidates.length === 1) {
                     select([cell]);
-                    app.act({type: 'value', arg: cell.candidates[0]});
+                    app.act({ type: 'value', arg: cell.candidates[0] });
                     changed = true;
                 }
             }
@@ -106,7 +105,7 @@ window.addEventListener('DOMContentLoaded', () => {
             let fillableCells = selectedCells.filter(isFillableCell);
             const isUsingSelectedCells = fillableCells.length !== 0
                 // there are selected cells with conflicts - the Mark button could fix them
-                || app.puzzle.check(['pencilmarks']).some(({cells}) => cells.some(cell => selectedCells.includes(cell)))
+                || app.puzzle.check(['pencilmarks']).some(({ cells }) => cells.some(cell => selectedCells.includes(cell)))
                 // user chose to mark only the selected cells no matter what in the settings
                 || (Framework.getSetting(selectedOnlySetting.name) && selectedCells.length !== 0);
             if (!isUsingSelectedCells) {
@@ -114,7 +113,7 @@ window.addEventListener('DOMContentLoaded', () => {
             }
             select(fillableCells);
             for (const digit of digits) {
-                app.act({type: 'candidates', arg: digit});
+                app.act({ type: 'candidates', arg: digit });
             }
 
             cleanUp(isUsingSelectedCells ? selectedCells : cells);
@@ -130,8 +129,46 @@ window.addEventListener('DOMContentLoaded', () => {
             }
         });
 
+        const doPairs = () => transaction(() => {
+            for (let i = 0; i < 100; i++) {
+                app.currentPuzzle.cages.forEach(cage => {
+                    if (cage.style !== 'rowcol' && cage.style !== 'box') { return; }
+                    const cells = cage.parsedCells;
+                    const maxCells = Math.min(5, cells.length - 1);
+                    const combi = (clist, l = -1) => {
+                        let vset = new Set(clist.map(c => c.candidates).flat());
+                        if (vset.size > 0 && vset.size === clist.length) {
+                            cells.forEach(c => {
+                                if (clist.includes(c)) { return; }
+                                select([c]);
+                                Array.from(vset).forEach(v => {
+                                    if (!c.candidates.includes(v)) { return; }
+                                    app.act({ type: "candidates", arg: v });
+                                });
+                            });
+                            return;
+                        }
+                        for (let i = l + 1; i < cells.length; i++) {
+                            if (cells[i].candidates.length === 0 || cells[i].value !== undefined) { continue; }
+                            combi([...clist, cells[i]], i);
+                        }
+                    };
+                    combi([]);
+                });
+                const cleaned = cleanUp();
+                const accepted = acceptSingles();
+                if (!cleaned && !accepted) {
+                    break;
+                }
+            }
+        });
+
         window.addEventListener("keypress", (event) => {
             if (event.key === 'q' || event.key === 'Q' || event.key === '`') { doMagic(); }
+        });
+
+        window.addEventListener("keypress", (event) => {
+            if (event.key === 'e' || event.key === 'E') { doPairs(); }
         });
 
         const createButton = (title, onClick, options = {}) => {
@@ -178,6 +215,7 @@ window.addEventListener('DOMContentLoaded', () => {
             content: 'Apply Mark button only to selected cells',
         };
         Framework.addSetting(selectedOnlySetting);
+        initialized = true;
     }
 
     if (typeof Framework !== "undefined" && Framework.getApp) {
