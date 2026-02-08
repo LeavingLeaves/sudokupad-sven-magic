@@ -132,7 +132,7 @@ window.addEventListener('DOMContentLoaded', () => {
         const doPairs = () => transaction(() => {
             for (let i = 0; i < 100; i++) {
                 app.currentPuzzle.cages.forEach(cage => {
-                    if (cage.style !== 'rowcol' && cage.style !== 'box') { return; }
+                    if (cage.type !== 'rowcol' && cage.style !== 'box') { return; }
                     const cells = cage.parsedCells;
                     const maxCells = Math.min(5, cells.length - 1);
                     const combi = (clist, l = -1) => {
