@@ -120,19 +120,11 @@ window.addEventListener('DOMContentLoaded', () => {
         });
 
         const doMagic = () => transaction(() => {
-            for (let i = 0; i < 100; i++) {
-                const cleaned = cleanUp();
-                const accepted = acceptSingles();
-                if (!cleaned && !accepted) {
-                    break;
-                }
-            }
-        });
-
-        const doPairs = () => transaction(() => {
-            for (let i = 0; i < 100; i++) {
+            for (let i = 0; i < 10; i++) {
+                let changed = false;
                 app.currentPuzzle.cages.forEach(cage => {
                     if (cage.type !== 'rowcol' && cage.style !== 'box') { return; }
+                    if (cage.unique !== true) { return; }
                     const cells = cage.parsedCells;
                     const maxCells = Math.min(5, cells.length - 1);
                     const combi = (clist, l = -1) => {
@@ -144,6 +136,7 @@ window.addEventListener('DOMContentLoaded', () => {
                                 Array.from(vset).forEach(v => {
                                     if (!c.candidates.includes(v)) { return; }
                                     app.act({ type: "candidates", arg: v });
+                                    changed = true;
                                 });
                             });
                             return;
@@ -157,7 +150,7 @@ window.addEventListener('DOMContentLoaded', () => {
                 });
                 const cleaned = cleanUp();
                 const accepted = acceptSingles();
-                if (!cleaned && !accepted) {
+                if (!cleaned && !accepted && !changed) {
                     break;
                 }
             }
@@ -165,10 +158,6 @@ window.addEventListener('DOMContentLoaded', () => {
 
         window.addEventListener("keypress", (event) => {
             if (event.key === 'q' || event.key === 'Q' || event.key === '`') { doMagic(); }
-        });
-
-        window.addEventListener("keypress", (event) => {
-            if (event.key === 'e' || event.key === 'E') { doPairs(); }
         });
 
         const createButton = (title, onClick, options = {}) => {
