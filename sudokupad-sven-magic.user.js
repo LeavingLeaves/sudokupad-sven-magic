@@ -63,6 +63,15 @@ window.addEventListener('DOMContentLoaded', () => {
             return cell.value ?? undefined;
         };
 
+        const getCellCandidates = (cell) => {
+            // filled value should override the candidates
+            if (getCellValue(cell) !== undefined) {
+                return [getCellValue(cell)];
+            }
+
+            return cell.candidates;
+        };
+
         const cleanUp = (applyToCells = app.grid.getCellList()) => transaction(() => {
             const conflicts = app.puzzle.check(['pencilmarks']);
 
@@ -120,21 +129,25 @@ window.addEventListener('DOMContentLoaded', () => {
         });
 
         const doMagic = () => transaction(() => {
-            for (let i = 0; i < 10; i++) {
+            for (let i = 0; i < 50; i++) {
+                const cleaned = cleanUp();
+                const accepted = acceptSingles();
                 let changed = false;
+
                 app.currentPuzzle.cages.forEach(cage => {
-                    if (cage.type !== 'rowcol' && cage.style !== 'box') { return; }
+                    // if (cage.type !== 'rowcol' && cage.style !== 'box') { return; }
                     if (cage.unique !== true) { return; }
                     const cells = cage.parsedCells;
-                    const maxCells = Math.min(5, cells.length - 1);
+
+                    // Naked Candidates & Hidden Candidates
                     const combi = (clist, l = -1) => {
-                        let vset = new Set(clist.map(c => c.candidates).flat());
+                        let vset = new Set(clist.map(c => getCellCandidates(c)).flat());
                         if (vset.size > 0 && vset.size === clist.length) {
                             cells.forEach(c => {
                                 if (clist.includes(c)) { return; }
-                                select([c]);
                                 Array.from(vset).forEach(v => {
-                                    if (!c.candidates.includes(v)) { return; }
+                                    if (!getCellCandidates(c).includes(v)) { return; }
+                                    select([c]);
                                     app.act({ type: "candidates", arg: v });
                                     changed = true;
                                 });
@@ -142,14 +155,37 @@ window.addEventListener('DOMContentLoaded', () => {
                             return;
                         }
                         for (let i = l + 1; i < cells.length; i++) {
-                            if (cells[i].candidates.length === 0 || cells[i].value !== undefined) { continue; }
+                            if (getCellCandidates(cells[i]).length === 0) { continue; }
                             combi([...clist, cells[i]], i);
                         }
                     };
                     combi([]);
+
+                    // Intersection Removal
+                    const digits = [...new Set(cells.flatMap(cell => {
+                        const value = getCellValue(cell);
+                        return value !== undefined ? [value] : cell.candidates;
+                    }).filter(Boolean))];
+                    if (cells.every(c => c.candidates.length > 0 || getCellValue(c) !== undefined) && digits.length === cells.length) {
+                        app.currentPuzzle.cages.forEach(cage2 => {
+                            if (cage2.unique !== true || cage === cage2) { return; }
+                            const cells2 = cage2.parsedCells;
+                            const cellsIntersection = cells.filter(c => cells2.includes(c));
+                            if (cellsIntersection.length <= 1) { return; }
+                            digits.forEach(v => {
+                                if (cells.some(c => !cellsIntersection.includes(c) && getCellCandidates(c).includes(v))) { return; }
+                                cells2.forEach(c => {
+                                    if (getCellValue(c) !== undefined || cellsIntersection.includes(c)) { return; }
+                                    if (!getCellCandidates(c).includes(v)) { return; }
+                                    select([c]);
+                                    app.act({ type: "candidates", arg: v });
+                                    changed = true;
+                                });
+                            });
+                        });
+                    }
                 });
-                const cleaned = cleanUp();
-                const accepted = acceptSingles();
+
                 if (!cleaned && !accepted && !changed) {
                     break;
                 }
