@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         SudokuPad Sven Magic
+// @name         SudokuPad Sven Magic Modified
 // @namespace    http://tampermonkey.net/
 // @version      26.4.22
 // @description  Add a button that does basic deduction in SudokuPad
