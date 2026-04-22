@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         SudokuPad Sven Magic
 // @namespace    http://tampermonkey.net/
-// @version      0.10
-// @description  Add a button that resolves all singles in SudokuPad
+// @version      26.4.22
+// @description  Add a button that does basic deduction in SudokuPad
 // @author       Chameleon (modified by Leaving Leaves)
 // @updateURL    https://github.com/LeavingLeaves/sudokupad-sven-magic/raw/main/sudokupad-sven-magic.user.js
 // @match        https://crackingthecryptic.com/*
@@ -14,7 +14,23 @@
 // @run-at       document-start
 // ==/UserScript==
 
-window.addEventListener('DOMContentLoaded', () => {
+let VARIANT = false;
+let VARIANT_LINE = true;
+
+let bitCount = new Map();
+function getBitCount(v) {
+    if (bitCount.get(v) === undefined) {
+        let cnt = 0;
+        while (v > 0) {
+            v = (v & (v - 1));
+            cnt++;
+        }
+        bitCount.set(v, cnt);
+    }
+    return bitCount.get(v);
+}
+
+function main() {
     let initialized = false;
     const init = () => {
         if (initialized) {
@@ -25,7 +41,7 @@ window.addEventListener('DOMContentLoaded', () => {
         const { app } = Framework;
         const sven = document.getElementById('svenpeek');
         const styles = getComputedStyle(sven);
-
+        const sleep = (ms = 10) => new Promise(resolve => setTimeout(resolve, ms));
 
         const deselect = () => app.act({ type: 'deselect' });
         const select = (cells) => {
@@ -36,7 +52,7 @@ window.addEventListener('DOMContentLoaded', () => {
         };
 
         let isInTransaction = false;
-        const transaction = (callback) => {
+        const transaction = async (callback) => {
             if (isInTransaction) {
                 return callback();
             }
@@ -46,7 +62,7 @@ window.addEventListener('DOMContentLoaded', () => {
             app.act({ type: 'groupstart' });
 
             try {
-                return callback();
+                return await callback();
             } finally {
                 isInTransaction = false;
                 select(prevSelectedCells);
@@ -56,6 +72,7 @@ window.addEventListener('DOMContentLoaded', () => {
 
         const getCellValue = (cell) => {
             // "hideclue" flag means that the given digit is not currently visible because of FoW - we should ignore such a given
+            if (cell === undefined) { return undefined; }
             if (cell.given && !cell.hideclue) {
                 return cell.given;
             }
@@ -65,10 +82,12 @@ window.addEventListener('DOMContentLoaded', () => {
 
         const getCellCandidates = (cell) => {
             // filled value should override the candidates
+            if (cell === undefined) {
+                return [];
+            }
             if (getCellValue(cell) !== undefined) {
                 return [getCellValue(cell)];
             }
-
             return cell.candidates;
         };
 
@@ -84,7 +103,7 @@ window.addEventListener('DOMContentLoaded', () => {
             return conflicts.length > 0;
         });
 
-        const acceptSingles = () => transaction(() => {
+        const acceptSingles = () => transaction(async () => {
             let changed = false;
 
             for (const cell of app.grid.getCellList()) {
@@ -92,13 +111,14 @@ window.addEventListener('DOMContentLoaded', () => {
                     select([cell]);
                     app.act({ type: 'value', arg: cell.candidates[0] });
                     changed = true;
+                    await sleep();
                 }
             }
 
             return changed;
         });
 
-        const markAll = () => transaction(() => {
+        const markAll = () => transaction(async () => {
             const cells = app.grid.getCellList();
             const selectedCells = [...app.puzzle.selectedCells];
             const emptyCell = cells.find(cell => !getCellValue(cell));
@@ -124,39 +144,73 @@ window.addEventListener('DOMContentLoaded', () => {
             for (const digit of digits) {
                 app.act({ type: 'candidates', arg: digit });
             }
+            await sleep();
 
             cleanUp(isUsingSelectedCells ? selectedCells : cells);
         });
 
-        const doMagic = () => transaction(() => {
+        const doMagic = () => transaction(async () => {
             for (let i = 0; i < 50; i++) {
                 const cleaned = cleanUp();
                 const accepted = acceptSingles();
                 let changed = false;
 
-                app.currentPuzzle.cages.forEach(cage => {
-                    // if (cage.type !== 'rowcol' && cage.style !== 'box') { return; }
-                    if (cage.unique !== true) { return; }
+                function canPlace(cell, value) {
+                    if (cell === undefined) { return false; }
+                    if ((getCellValue(cell) ?? value) !== value) { return false; }
+                    if (cell.candidates.length > 0 && !getCellCandidates(cell).includes(value)) { return false; }
+                    return true;
+                }
+
+                async function fillValue(cell, value) {
+                    if (cell === undefined) { return; }
+                    if (typeof (value) === "number") { value = value.toString(); }
+                    if (getCellValue(cell)) { return; }
+                    select([cell]);
+                    app.act({ type: 'value', arg: value });
+                    changed = true;
+                    await sleep();
+                }
+
+                async function removeCandidates(cells, candidates) {
+                    if (!Array.isArray(cells)) { cells = [cells]; }
+                    if (!Array.isArray(candidates)) { candidates = [candidates]; }
+                    candidates = candidates.map(v => typeof (v) === "number" ? v.toString() : v);
+                    for (const c of cells) {
+                        if (c === undefined || getCellValue(c) !== undefined) { continue; }
+                        for (const v of candidates) {
+                            if (!c.candidates.includes(v)) { continue; }
+                            select([c]);
+                            app.act({ type: "candidates", arg: v });
+                            changed = true;
+                            await sleep();
+                        }
+                        if (getCellCandidates(c).length === 1) {
+                            await fillValue(c, c.candidates[0]);
+                        }
+                    }
+                };
+
+                for (const cage of app.currentPuzzle.cages) {
+                    // if (cage.type !== 'rowcol' && cage.style !== 'box') { continue; }
+                    if (cage.unique !== true) { continue; }
                     const cells = cage.parsedCells;
+                    const candis = cells.map(c => getCellCandidates(c));
+                    const candiset = Array.from(new Set(candis.flat()));
+                    const candimask = candis.map(l => l.map(c => (1 << candiset.indexOf(c))).reduce((a, b) => (a | b), 0));
 
                     // Naked Candidates & Hidden Candidates
-                    const combi = (clist, l = -1) => {
-                        let vset = new Set(clist.map(c => getCellCandidates(c)).flat());
-                        if (vset.size > 0 && vset.size === clist.length) {
-                            cells.forEach(c => {
-                                if (clist.includes(c)) { return; }
-                                Array.from(vset).forEach(v => {
-                                    if (!getCellCandidates(c).includes(v)) { return; }
-                                    select([c]);
-                                    app.act({ type: "candidates", arg: v });
-                                    changed = true;
-                                });
-                            });
+                    const combi = async (cilist, l = -1) => {
+                        const mask = cilist.reduce((a, i) => (a | (candimask[i])), 0);
+                        if (mask > 0 && getBitCount(mask) === cilist.length) {
+                            await removeCandidates(cells.filter((c, i) => !cilist.includes(i)), Array.from(new Set(cilist.map(ci => candis[ci]).flat())));
                             return;
                         }
                         for (let i = l + 1; i < cells.length; i++) {
-                            if (getCellCandidates(cells[i]).length === 0) { continue; }
-                            combi([...clist, cells[i]], i);
+                            if (candimask[i] === 0) { continue; }
+                            cilist.push(i);
+                            combi(cilist, i);
+                            cilist.pop();
                         }
                     };
                     combi([]);
@@ -167,24 +221,239 @@ window.addEventListener('DOMContentLoaded', () => {
                         return value !== undefined ? [value] : cell.candidates;
                     }).filter(Boolean))];
                     if (cells.every(c => c.candidates.length > 0 || getCellValue(c) !== undefined) && digits.length === cells.length) {
-                        app.currentPuzzle.cages.forEach(cage2 => {
-                            if (cage2.unique !== true || cage === cage2) { return; }
+                        for (const cage2 of app.currentPuzzle.cages) {
+                            if (cage2.unique !== true || cage === cage2) { continue; }
                             const cells2 = cage2.parsedCells;
                             const cellsIntersection = cells.filter(c => cells2.includes(c));
-                            if (cellsIntersection.length <= 1) { return; }
-                            digits.forEach(v => {
-                                if (cells.some(c => !cellsIntersection.includes(c) && getCellCandidates(c).includes(v))) { return; }
-                                cells2.forEach(c => {
-                                    if (getCellValue(c) !== undefined || cellsIntersection.includes(c)) { return; }
-                                    if (!getCellCandidates(c).includes(v)) { return; }
-                                    select([c]);
-                                    app.act({ type: "candidates", arg: v });
-                                    changed = true;
-                                });
-                            });
-                        });
+                            if (cellsIntersection.length <= 1) { continue; }
+                            for (const v of digits) {
+                                if (cells.some(c => !cellsIntersection.includes(c) && getCellCandidates(c).includes(v))) { continue; }
+                                await removeCandidates(cells2.filter(c => !cellsIntersection.includes(c)), v);
+                            }
+                        }
                     }
-                });
+                }
+
+                const rules = (app.currentPuzzle.title + '\n' + app.currentPuzzle.rules).normalize('NFKD');
+
+                // Variant Rule
+                if (VARIANT) {
+                    const elements = [...app.sourcePuzzle.overlays ?? [], ...app.sourcePuzzle.underlays ?? []];
+                    // Killer Cage
+                    for (const cage of app.currentPuzzle.cages) {
+                        if (cage.style !== "killer" || cage.value === undefined) { continue; }
+                        if (cage.parsedCells.some(c => getCellCandidates(c).length === 0 || c.hideclue)) { continue; }
+                        const sum = parseInt(cage.value);
+                        const arr = cage.parsedCells.map(c => getCellCandidates(c));
+                        const getCombinations = (arrays, n) =>
+                            arrays.reduce((acc, cur) => acc.flatMap(c => cur.map(v => [...c, v]))
+                                .filter(l => l.reduce((s, v) => s + parseInt(v), 0) <= n && (!cage.unique || new Set(l).size === l.length)), [[]])
+                                .filter(comb => comb.reduce((s, v) => s + parseInt(v), 0) === n);
+                        const combs = getCombinations(arr, sum);
+                        for (const [i, c] of cage.parsedCells.entries()) {
+                            for (const v of getCellCandidates(c)) {
+                                if (!combs.some(comb => comb[i] === v)) {
+                                    await removeCandidates(c, v);
+                                }
+                            }
+                        }
+                    }
+
+                    async function DominoClue(cell1, cell2, cond, dir = false) {
+                        if (cell1.hideclue && cell2.hideclue) { return; }
+                        const cand1 = getCellCandidates(cell1);
+                        const cand2 = getCellCandidates(cell2);
+                        const f = (a, b) => cond(parseInt(a), parseInt(b));
+                        if (cand1.length === 0 || cand2.length === 0) { return; }
+                        for (const v1 of cand1) {
+                            if (!cand2.some(v2 => f(v1, v2) || !dir && f(v2, v1))) {
+                                await removeCandidates(cell1, v1);
+                            }
+                        }
+                        for (const v2 of cand2) {
+                            if (!cand1.some(v1 => f(v1, v2) || !dir && f(v2, v1))) {
+                                await removeCandidates(cell2, v2);
+                            }
+                        }
+                    }
+
+                    // Dot Clue
+                    for (const obj of elements) {
+                        if (!obj.center.some(v => v % 1 === 0) || !obj.center.some(v => v % 1 === .5)) { continue; }
+                        const cell1 = app.puzzle.cells.find(cell => cell.row === Math.floor(obj.center[0] - .5) && cell.col === Math.floor(obj.center[1] - .5));
+                        const cell2 = app.puzzle.cells.find(cell => cell.row === Math.floor(obj.center[0]) && cell.col === Math.floor(obj.center[1]));
+                        // V
+                        if (obj.text === "V") {
+                            DominoClue(cell1, cell2, (a, b) => a + b === 5);
+                        }
+                        // X
+                        if (obj.text === "X") {
+                            await removeCandidates([cell1, cell2], 5);
+                            DominoClue(cell1, cell2, (a, b) => a + b === 10);
+                        }
+                        // Black Kropki Dot
+                        if (/kropki|black/i.test(rules) && (obj.text ?? "") === "" && obj.backgroundColor === "#000000") {
+                            DominoClue(cell1, cell2, (a, b) => a * 2 === b);
+                        }
+                        // White Kropki Dot
+                        if (/kropki|white/i.test(rules) && (obj.text ?? "") === "" && obj.backgroundColor === "#FFFFFF") {
+                            DominoClue(cell1, cell2, (a, b) => a + 1 === b);
+                        }
+                    }
+
+                    // Line Clue
+                    for (const line of (app.sourcePuzzle.lines ?? [])) {
+                        if (!VARIANT_LINE) { break; }
+                        const lcells = [];
+                        let x_lst = undefined, y_lst = undefined;
+                        if (line.wayPoints === undefined || line.wayPoints.some(([x, y]) => x % 1 !== .5 || y % 1 !== .5)) { continue; }
+                        for (const [x, y] of line.wayPoints) {
+                            if (x_lst === undefined) {
+                                [x_lst, y_lst] = [x, y];
+                                lcells.push(app.puzzle.cells.find(cell => cell.row === x_lst - .5 && cell.col === y_lst - .5));
+                            }
+                            while (x_lst !== x || y_lst !== y) {
+                                x_lst += (Math.sign(x - x_lst));
+                                y_lst += (Math.sign(y - y_lst));
+                                lcells.push(app.puzzle.cells.find(cell => cell.row === x_lst - .5 && cell.col === y_lst - .5));
+                            }
+                        }
+                        if (lcells.some(c => c === undefined)) { continue; }
+                        // Thermometer
+                        if (elements.some(obj => obj.backgroundColor === line.color && obj.rounded &&
+                            obj.center[0] - .5 === lcells[lcells.length - 1].row && obj.center[1] - .5 === lcells[lcells.length - 1].col)) {
+                            lcells.reverse();
+                        }
+                        if (/thermo/i.test(rules) && elements.some(obj => obj.backgroundColor === line.color && obj.rounded &&
+                            obj.center[0] - .5 === lcells[0].row && obj.center[1] - .5 === lcells[0].col) && !lcells.some(c => c === undefined || c.hideclue)) {
+                            for (const [i, cell1] of lcells.entries()) {
+                                if (i + 1 === lcells.length) { break; }
+                                const cell2 = lcells[i + 1];
+                                if (/\bslow\b/i.test(rules) && !app.currentPuzzle.cages.some(cage => cage.unique && cage.parsedCells.includes(cell1) && cage.parsedCells.includes(cell2))) {
+                                    DominoClue(cell1, cell2, (a, b) => a <= b, true);
+                                } else {
+                                    DominoClue(cell1, cell2, (a, b) => a < b, true);
+                                }
+                            }
+                        }
+                        const rgbToHsv = (r, g, b) => {
+                            r /= 255, g /= 255, b /= 255;
+                            const max = Math.max(r, g, b), min = Math.min(r, g, b);
+                            const d = max - min;
+                            const h = d === 0 ? 0 : max === r ? (g - b) / d : max === g ? 2 + (b - r) / d : 4 + (r - g) / d;
+                            const s = max === 0 ? 0 : d / max;
+                            return [(h * 60 + 360) % 360, s, max];
+                        };
+                        const isColor = (c1, c2, tol = 15) => {
+                            c1 = c1.replace(/^#/, '').replace(/^0x/, '').toUpperCase();
+                            c2 = c2.replace(/^#/, '').replace(/^0x/, '').toUpperCase();
+                            if (c1.length < 6) c1 = c1.split('').map(c => c + c).join('');
+                            if (c2.length < 6) c2 = c2.split('').map(c => c + c).join('');
+                            if (tol === 0) { return c1.slice(0, 6) === c2.slice(0, 6); }
+                            const toRgb = hex => [0, 2, 4].map(i => parseInt(hex.slice(i, i + 2), 16));
+                            const [r1, g1, b1] = toRgb(c1);
+                            const [r2, g2, b2] = toRgb(c2);
+                            const [h1, s1, v1] = rgbToHsv(r1, g1, b1);
+                            const [h2, s2, v2] = rgbToHsv(r2, g2, b2);
+                            return Math.min(Math.abs(h1 - h2), 360 - Math.abs(h1 - h2)) <= tol && s1 > .1 && s2 > .1;
+                        };
+                        for (const [i, cell1] of lcells.entries()) {
+                            if (i + 1 === lcells.length) { break; }
+                            const cell2 = lcells[i + 1];
+                            const color = line.color;
+                            // German Whisper
+                            if (/german/i.test(rules) && isColor(color, "#67f067") && app.sourcePuzzle.cells.length === 9) {
+                                DominoClue(cell1, cell2, (a, b) => Math.abs(a - b) >= 5);
+                            }
+                            // Dutch Whisper
+                            if (/dutch/i.test(rules) && isColor(color, "#ffa600") && app.sourcePuzzle.cells.length === 9) {
+                                DominoClue(cell1, cell2, (a, b) => Math.abs(a - b) >= 4);
+                            }
+                            // Renban
+                            if (/renban/i.test(rules) && isColor(color, "#f067f0") && !lcells.some(c => c.hideclue)) {
+                                let len = new Set(lcells).size;
+                                let vlist = lcells.map(c => getCellValue(c)).filter(v => v !== undefined);
+                                if (!lcells.some(c => getCellCandidates(c).length === 0)) {
+                                    vlist.push(..."123456789".split('').filter(v1 => lcells.some(c => !getCellCandidates(c).some(v2 => Math.abs(v1 - v2) < len))));
+                                }
+                                await removeCandidates(lcells, vlist);
+                            }
+                            // Parity
+                            if (/parity/i.test(rules) && isColor(color, "#f66f")) {
+                                DominoClue(cell1, cell2, (a, b) => (a + b) % 2 === 1);
+                            }
+                        }
+                    }
+
+                    // Quadruples
+                    for (const obj of elements) {
+                        if (obj.backgroundColor === "#FFFFFF" && obj.center.every(v => v % 1 === 0)) {
+                            if (obj.text === undefined) { continue; }
+                            const values = obj.text.split(/\n|\s/);
+                            if (values.length === 0) { continue; }
+                            const cells = [[0, 0], [0, -1], [-1, 0], [-1, -1]].map(([dr, dc]) => app.puzzle.cells.find(cell => cell.row === obj.center[0] + dr && cell.col === obj.center[1] + dc));
+                            if (cells.some(c => getCellCandidates(c).length === 0 || c.hideclue)) { continue; }
+                            if (values.length === 4) {
+                                await removeCandidates(cells, "123456789".split('').filter(v => !values.includes(v)));
+                            }
+                            for (const v of values) {
+                                let qcells = cells.filter(c => getCellCandidates(c).includes(v));
+                                if (qcells.length === 1) {
+                                    await fillValue(qcells[0], v);
+                                }
+                            }
+                            for (const cage of app.currentPuzzle.cages) {
+                                if (cage.unique !== true) { continue; }
+                                if (cells.some(c => !cage.parsedCells.includes(c))) { continue; }
+                                const ocells = cage.parsedCells.filter(c => !cells.includes(c));
+                                await removeCandidates(ocells, values);
+                            }
+                        }
+                    }
+
+                    // Global Entropy
+                    if (/global entropy/i.test(rules)) {
+                        for (let i = 1; i < app.sourcePuzzle.cells.length; i++) {
+                            for (let j = 1; j < app.sourcePuzzle.cells[0].length; j++) {
+                                let scells = [[i - 1, j - 1], [i - 1, j], [i, j - 1], [i, j]].map(([r, c]) => app.puzzle.cells.find(cell => cell.row === r && cell.col === c));
+                                if (scells.some(c => getCellCandidates(c).length === 0)) { continue; }
+                                for (const ent of ["123", "456", "789"]) {
+                                    ent = ent.split('');
+                                    let entcells = scells.filter(c => getCellCandidates(c).some(v => ent.includes(v)));
+                                    if (entcells.length === 1) {
+                                        let cell = entcells[0];
+                                        await removeCandidates(cell, getCellCandidates(cell).filter(v => !ent.includes(v)));
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Dutch Flat Mates
+                    if (/dutch flats?|flat mates?/i.test(rules)) {
+                        const cells = app.puzzle.cells;
+                        for (const cell of cells) {
+                            const { row, col } = cell;
+                            const cellN = cells.find(cell => cell.row === row - 1 && cell.col === col);
+                            const cellS = cells.find(cell => cell.row === row + 1 && cell.col === col);
+                            if (getCellValue(cell) === '5' && !canPlace(cellN, '1')) {
+                                await fillValue(cellS, '9');
+                            }
+                            if (getCellValue(cell) === '5' && !canPlace(cellS, '9')) {
+                                await fillValue(cellN, '1');
+                            }
+                            if (!canPlace(cellN, '1') && !canPlace(cellS, '9')) {
+                                await removeCandidates(cell, '5');
+                            }
+                            if (getCellValue(cell) === '9' || cellS === undefined && !canPlace(cell, '5')) {
+                                await removeCandidates(cellN, '1');
+                            }
+                            if (getCellValue(cell) === '1' || cellN === undefined && !canPlace(cell, '5')) {
+                                await removeCandidates(cellS, '9');
+                            }
+                        }
+                    }
+                }
 
                 if (!cleaned && !accepted && !changed) {
                     break;
@@ -194,6 +463,12 @@ window.addEventListener('DOMContentLoaded', () => {
 
         window.addEventListener("keypress", (event) => {
             if (event.key === 'q' || event.key === 'Q' || event.key === '`') { doMagic(); }
+        });
+        window.addEventListener("keypress", (event) => {
+            if (event.key === 'k' || event.key === 'K') { VARIANT = !VARIANT; console.log(`Variant rules: ${VARIANT}`); }
+        });
+        window.addEventListener("keypress", (event) => {
+            if (event.key === 'l' || event.key === 'L') { VARIANT_LINE = !VARIANT_LINE; console.log(`Variant line rules: ${VARIANT_LINE}`); }
         });
 
         const createButton = (title, onClick, options = {}) => {
@@ -246,4 +521,13 @@ window.addEventListener('DOMContentLoaded', () => {
     if (typeof Framework !== "undefined" && Framework.getApp) {
         Framework.getApp().then(init);
     }
-});
+    console.log("SudokuPad Sven Magic Enabled.");
+}
+
+if (document.readyState === "loading") {
+    // Loading hasn't finished yet
+    document.addEventListener("DOMContentLoaded", main);
+} else {
+    // `DOMContentLoaded` has already fired
+    main();
+}
