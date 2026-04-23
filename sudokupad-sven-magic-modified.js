@@ -195,7 +195,7 @@ function main() {
                 for (const cage of app.currentPuzzle.cages) {
                     // if (cage.type !== 'rowcol' && cage.style !== 'box') { continue; }
                     if (cage.unique !== true) { continue; }
-                    const cells = cage.parsedCells;
+                    const cells = cage.parsedCells.filter(c => getCellValue(c) === undefined);
                     const candis = cells.map(c => getCellCandidates(c));
                     const candiset = Array.from(new Set(candis.flat()));
                     const candimask = candis.map(l => l.map(c => (1 << candiset.indexOf(c))).reduce((a, b) => (a | b), 0));
